@@ -1,0 +1,9 @@
+folium==0.18.0
+fpdf==1.7.2
+geopy==2.4.1
+langdetect==1.0.9
+pandas==2.2.3
+Requests==2.32.3
+streamlit==1.40.1
+streamlit_folium==0.23.2
+transformers==4.46.3
