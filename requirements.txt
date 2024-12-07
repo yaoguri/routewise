@@ -4,6 +4,7 @@ geopy==2.4.1
 langdetect==1.0.9
 pandas==2.2.3
 Requests==2.32.3
+sentencepiece==0.2.0
 streamlit==1.40.1
 streamlit_folium==0.23.2
 transformers==4.46.3
