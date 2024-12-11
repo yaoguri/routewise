@@ -6,15 +6,27 @@ import folium
 import datetime
 import requests
 import re
+import sys
+import subprocess
 from geopy.distance import great_circle
 from streamlit_folium import folium_static
 from streamlit_folium import st_folium
 from langdetect import detect
 from transformers import MarianMTModel, MarianTokenizer, pipeline
 from fpdf import FPDF
+from functools import lru_cache
 import io
 
+try:
+    import sacremoses
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "sacremoses"])
+
 st.set_page_config(page_title='Itinerary Planner in Mendez, Cavite', layout="wide")
+
+@st.cache_data
+def load_csv(file_path):
+    return pd.read_csv(file_path)
 
 # Helper function to encode image to base64
 def image_to_base64(file_path):
@@ -132,8 +144,9 @@ st.title("Itinerary Planner in Mendez, Cavite")
 st.text("Plan your perfect day in Mendez!")
 
 # Load the DataFrame
-df = pd.read_csv('static/LOCATIONS1.csv')
-df.columns = df.columns.str.strip()
+static_folder = "static"
+df = load_csv(os.path.join(static_folder, 'LOCATIONS1.csv'))
+df.columns = df.columns.str.strip
 
 # Ensure the DataFrame has the necessary columns
 required_columns = ['Latitude', 'Longitude', 'Category', 'time_estimate', 'Location']
@@ -227,13 +240,8 @@ with homeTab:
         total_duration = end_datetime - start_datetime
         total_available_time = total_duration.total_seconds() / 60  # Convert to minutes
 
-        def calculate_distance(coord1, coord2):
-            lat1, lon1 = map(float, coord1)
-            lat2, lon2 = map(float, coord2)
-
-            if not (-90 <= lat1 <= 90 and -90 <= lat2 <= 90):
-                raise ValueError(f"Latitude values must be in the range [-90, 90]. Received: {lat1}, {lat2}")
-
+        @lru_cache(maxsize=None)
+        def calculate_distance_memoized(lat1, lon1, lat2, lon2):
             return great_circle((lat1, lon1), (lat2, lon2)).miles
 
         def interleave_preferences(start, destinations, user_preferences, preferred_categories, total_available_time):
@@ -242,15 +250,11 @@ with homeTab:
             total_time = 0
 
             preferred_destinations = destinations[
-                destinations['Category'].apply(
-                    lambda x: isinstance(x, list) and any(cat in x for cat in preferred_categories)
-                )
+                destinations['Category'].apply(lambda x: isinstance(x, list) and any(cat in x for cat in preferred_categories))
             ]
 
             other_destinations = destinations[
-                destinations['Category'].apply(
-                    lambda x: isinstance(x, list) and not any(cat in x for cat in preferred_categories)
-                )
+                destinations['Category'].apply(lambda x: isinstance(x, list) and not any(cat in x for cat in preferred_categories))
             ]
 
             preferred_destinations = preferred_destinations.to_dict('records')
@@ -259,24 +263,24 @@ with homeTab:
             while total_time < total_available_time and (preferred_destinations or other_destinations):
                 for dest_list in [preferred_destinations, other_destinations]:
                     if dest_list:
-                        # Find the nearest destination in the current list
+                        # Greedy choice: Find the nearest destination
                         next_dest = min(
-                            dest_list, 
-                            key=lambda x: great_circle(
-                                current_location, (x['Latitude'], x['Longitude'])
-                            ).km
+                        dest_list,
+                        key=lambda x: calculate_distance_memoized(current_location[0], current_location[1], x['Latitude'], x['Longitude'])
                         )
+                        print(f"Greedy choice: Adding {next_dest['Location']}")  # Log the choice
                         estimated_time = next_dest['time_estimate']
 
                         if total_time + estimated_time <= total_available_time:
                             route.append((next_dest['Latitude'], next_dest['Longitude']))
                             total_time += estimated_time
                             current_location = (next_dest['Latitude'], next_dest['Longitude'])
-                            dest_list.remove(next_dest)  # Remove the destination once added
+                            dest_list.remove(next_dest)
                         else:
-                            dest_list.remove(next_dest)  # Remove it if it doesn't fit in time
+                            dest_list.remove(next_dest)  # Remove if it doesn't fit in time
 
             return route, total_time
+
         
         route, total_time = interleave_preferences(routeStart, df, user_preferences, preferences, total_available_time)
 
@@ -410,6 +414,7 @@ with spotsTab:
 
     reviews_data = load_reviews()
 
+    @st.cache_data
     def load_sentiment_words(pos_file="static/positive-words.txt", neg_file="static/negative-words.txt"):
         try:
             with open(pos_file, "r", encoding="utf-8") as f:
@@ -424,6 +429,7 @@ with spotsTab:
             st.error(f"Error opening file: {e}")
             return set(), set()
 
+    @st.cache_data
     def load_translation_models():
         model_names = {
             "Tagalog": "Helsinki-NLP/opus-mt-en-tl",
@@ -448,6 +454,15 @@ with spotsTab:
         batch = tokenizer.prepare_seq2seq_batch([text], return_tensors="pt")
         translated = model.generate(**batch)
         return tokenizer.decode(translated[0], skip_special_tokens=True)
+    
+    def translate_reviews(reviews, lang, translation_models):
+        if len(reviews) == 1:  # Base case
+            return [translate_text_to_language(reviews[0], lang, translation_models)]
+        else:
+            mid = len(reviews) // 2
+            left = translate_reviews(reviews[:mid], lang, translation_models)  # Divide
+            right = translate_reviews(reviews[mid:], lang, translation_models)  # Conquer
+            return left + right
 
     def translate_text_to_language(text, lang, translation_models):
         if lang in translation_models:
@@ -504,8 +519,9 @@ with spotsTab:
                     key=f"{user}_{_}"
                 )
                 if lang_choice != "None":
-                    translated_text = translate_text_to_language(translated_review, lang_choice, translation_models)
-                    st.write(f"Translated to {lang_choice}: _{translated_text}_")
+                    translated_reviews = translate_reviews([review], lang_choice, translation_models)
+                    st.write(f"Translated to {lang_choice}: _{translated_reviews[0]}_")
+
 
                 st.write("---")
 
