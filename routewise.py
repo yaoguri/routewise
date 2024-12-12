@@ -8,7 +8,6 @@ import folium
 import datetime
 import requests
 import re
-import sacremoses
 from geopy.distance import great_circle
 from streamlit_folium import folium_static
 from streamlit_folium import st_folium
