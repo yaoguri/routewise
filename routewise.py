@@ -1,3 +1,5 @@
+#routewise added st_folium
+
 import streamlit as st
 import os
 import base64
@@ -6,27 +8,16 @@ import folium
 import datetime
 import requests
 import re
-import sys
-import subprocess
+import sacremoses
 from geopy.distance import great_circle
 from streamlit_folium import folium_static
 from streamlit_folium import st_folium
 from langdetect import detect
 from transformers import MarianMTModel, MarianTokenizer, pipeline
 from fpdf import FPDF
-from functools import lru_cache
 import io
 
-#try:
-    #import sacremoses
-#except ImportError:
-    #subprocess.check_call([sys.executable, "-m", "pip", "install", "sacremoses"])
-
 st.set_page_config(page_title='Itinerary Planner in Mendez, Cavite', layout="wide")
-
-@st.cache_data
-def load_csv(file_path):
-    return pd.read_csv(file_path)
 
 # Helper function to encode image to base64
 def image_to_base64(file_path):
@@ -144,9 +135,8 @@ st.title("Itinerary Planner in Mendez, Cavite")
 st.text("Plan your perfect day in Mendez!")
 
 # Load the DataFrame
-static_folder = "static"
-df = load_csv(os.path.join(static_folder, 'LOCATIONS1.csv'))
-df.columns = df.columns.str.strip
+df = pd.read_csv('static/LOCATIONS1.csv')
+df.columns = df.columns.str.strip()
 
 # Ensure the DataFrame has the necessary columns
 required_columns = ['Latitude', 'Longitude', 'Category', 'time_estimate', 'Location']
@@ -169,7 +159,7 @@ def generate_detailed_itinerary(route, start_time, end_time, df):
     num_locations = len(route)
 
     # Guard against empty route
-    time_per_location = total_duration / num_locations if num_locations > 0 else 0  
+    time_per_location = total_duration / num_locations if num_locations > 0 else 0
 
     current_time = start_time
 
@@ -201,7 +191,7 @@ with homeTab:
     with st.form(key="generator_form"):
         col1, col2, col3, col4, col5 = st.columns(5)
 
-        with col1: 
+        with col1:
             startPoint = st.selectbox("San ka galing ?", ["North (Indang -Mendez Rd)", "South (Tagaytay-Nasugbu Hwy)"])
             routeStart = start1 if startPoint == "North (Indang -Mendez Rd)" else start2
 
@@ -240,8 +230,13 @@ with homeTab:
         total_duration = end_datetime - start_datetime
         total_available_time = total_duration.total_seconds() / 60  # Convert to minutes
 
-        @lru_cache(maxsize=None)
-        def calculate_distance_memoized(lat1, lon1, lat2, lon2):
+        def calculate_distance(coord1, coord2):
+            lat1, lon1 = map(float, coord1)
+            lat2, lon2 = map(float, coord2)
+
+            if not (-90 <= lat1 <= 90 and -90 <= lat2 <= 90):
+                raise ValueError(f"Latitude values must be in the range [-90, 90]. Received: {lat1}, {lat2}")
+
             return great_circle((lat1, lon1), (lat2, lon2)).miles
 
         def interleave_preferences(start, destinations, user_preferences, preferred_categories, total_available_time):
@@ -250,11 +245,15 @@ with homeTab:
             total_time = 0
 
             preferred_destinations = destinations[
-                destinations['Category'].apply(lambda x: isinstance(x, list) and any(cat in x for cat in preferred_categories))
+                destinations['Category'].apply(
+                    lambda x: isinstance(x, list) and any(cat in x for cat in preferred_categories)
+                )
             ]
 
             other_destinations = destinations[
-                destinations['Category'].apply(lambda x: isinstance(x, list) and not any(cat in x for cat in preferred_categories))
+                destinations['Category'].apply(
+                    lambda x: isinstance(x, list) and not any(cat in x for cat in preferred_categories)
+                )
             ]
 
             preferred_destinations = preferred_destinations.to_dict('records')
@@ -263,25 +262,25 @@ with homeTab:
             while total_time < total_available_time and (preferred_destinations or other_destinations):
                 for dest_list in [preferred_destinations, other_destinations]:
                     if dest_list:
-                        # Greedy choice: Find the nearest destination
+                        # Find the nearest destination in the current list
                         next_dest = min(
-                        dest_list,
-                        key=lambda x: calculate_distance_memoized(current_location[0], current_location[1], x['Latitude'], x['Longitude'])
+                            dest_list,
+                            key=lambda x: great_circle(
+                                current_location, (x['Latitude'], x['Longitude'])
+                            ).km
                         )
-                        print(f"Greedy choice: Adding {next_dest['Location']}")  # Log the choice
                         estimated_time = next_dest['time_estimate']
 
                         if total_time + estimated_time <= total_available_time:
                             route.append((next_dest['Latitude'], next_dest['Longitude']))
                             total_time += estimated_time
                             current_location = (next_dest['Latitude'], next_dest['Longitude'])
-                            dest_list.remove(next_dest)
+                            dest_list.remove(next_dest)  # Remove the destination once added
                         else:
-                            dest_list.remove(next_dest)  # Remove if it doesn't fit in time
+                            dest_list.remove(next_dest)  # Remove it if it doesn't fit in time
 
             return route, total_time
 
-        
         route, total_time = interleave_preferences(routeStart, df, user_preferences, preferences, total_available_time)
 
         route_map = folium.Map(location=routeStart, zoom_start=12)
@@ -309,7 +308,7 @@ with homeTab:
         for index, (lat, lon) in enumerate(route):
             location_match = df[(df['Latitude'] == lat) & (df['Longitude'] == lon)]
             destination_name = location_match['Location'].values[0] if not location_match.empty else "Unknown Location"
-            
+
             # Add a marker for each destination in the route
             folium.Marker(
                 location=[lat, lon],
@@ -369,11 +368,11 @@ with homeTab:
 
                 # Display the Folium map in the mapCol
                 with mapCol:
-                    folium_static(destination_map)
+                    st_folium(destination_map)
 
                 # Get the picture filename from the DataFrame
                 picture_filename = df.loc[(df['Latitude'] == destination_lat) & (df['Longitude'] == destination_lon), 'pics'].values
-                
+
                 # Check if picture_filename is not empty and is a string
                 if picture_filename.size > 0 and isinstance(picture_filename[0], str):
                     picture_path = os.path.join(static_folder, picture_filename[0])  # Get the first matching picture
@@ -388,8 +387,8 @@ with homeTab:
             st.write(f"End Time: {item['End Time']}")
             st.write(f"Category: {item['Category']}")  # Display the category
             st.write("---")
-            
-        folium_static(route_map)
+
+        st_folium(route_map)
 
 
 with spotsTab:
@@ -400,10 +399,10 @@ with spotsTab:
         except FileNotFoundError:
             st.error("CSV file not found. Please ensure the file exists.")
             return pd.DataFrame(columns=["location", "user", "review"])
-    
+
     def get_reviews_by_location(reviews_df, location):
         return reviews_df[reviews_df["location"].str.lower() == location.lower()]
-    
+
     def display_reviews(location, reviews_df):
         reviews = get_reviews_by_location(reviews_df, location)
         if reviews.empty:
@@ -414,7 +413,6 @@ with spotsTab:
 
     reviews_data = load_reviews()
 
-    @st.cache_data
     def load_sentiment_words(pos_file="static/positive-words.txt", neg_file="static/negative-words.txt"):
         try:
             with open(pos_file, "r", encoding="utf-8") as f:
@@ -429,7 +427,6 @@ with spotsTab:
             st.error(f"Error opening file: {e}")
             return set(), set()
 
-    @st.cache_data
     def load_translation_models():
         model_names = {
             "Tagalog": "Helsinki-NLP/opus-mt-en-tl",
@@ -443,26 +440,17 @@ with spotsTab:
             model = MarianMTModel.from_pretrained(model_name)
             models[lang] = (tokenizer, model)
         return models
-    
+
     def load_translation_model():
         model_name = "Helsinki-NLP/opus-mt-tl-en"
         tokenizer = MarianTokenizer.from_pretrained(model_name)
         model = MarianMTModel.from_pretrained(model_name)
         return tokenizer, model
-    
+
     def translate_text(text, tokenizer, model):
         batch = tokenizer.prepare_seq2seq_batch([text], return_tensors="pt")
         translated = model.generate(**batch)
         return tokenizer.decode(translated[0], skip_special_tokens=True)
-    
-    def translate_reviews(reviews, lang, translation_models):
-        if len(reviews) == 1:  # Base case
-            return [translate_text_to_language(reviews[0], lang, translation_models)]
-        else:
-            mid = len(reviews) // 2
-            left = translate_reviews(reviews[:mid], lang, translation_models)  # Divide
-            right = translate_reviews(reviews[mid:], lang, translation_models)  # Conquer
-            return left + right
 
     def translate_text_to_language(text, lang, translation_models):
         if lang in translation_models:
@@ -470,8 +458,8 @@ with spotsTab:
             batch = tokenizer.prepare_seq2seq_batch([text], return_tensors="pt")
             translated = model.generate(**batch)
             return tokenizer.decode(translated[0], skip_special_tokens=True)
-        return text    
-    
+        return text
+
     def analyze_sentiment(review, positive_words, negative_words):
         review_words = re.findall(r'\w+', review.lower())
         positive_count = sum(1 for word in review_words if word in positive_words)
@@ -481,7 +469,7 @@ with spotsTab:
             return "Positive"
         elif negative_count > positive_count:
             return "Negative"
-        else: 
+        else:
             return "Neutral"
 
     def is_text_english(text):
@@ -490,7 +478,7 @@ with spotsTab:
             return language == "en"
         except Exception:
             return False
-        
+
     def display_reviews_with_translation(location, reviews_df, translation_models, positive_words, negative_words):
         reviews = get_reviews_by_location(reviews_df, location)
         if reviews.empty:
@@ -519,9 +507,8 @@ with spotsTab:
                     key=f"{user}_{_}"
                 )
                 if lang_choice != "None":
-                    translated_reviews = translate_reviews([review], lang_choice, translation_models)
-                    st.write(f"Translated to {lang_choice}: _{translated_reviews[0]}_")
-
+                    translated_text = translate_text_to_language(translated_review, lang_choice, translation_models)
+                    st.write(f"Translated to {lang_choice}: _{translated_text}_")
 
                 st.write("---")
 
@@ -873,10 +860,10 @@ with spotsTab:
             if st.button("Palocpoc Chruch Reviews"):
                 st.session_state["selected_image"] = 24
                 st.session_state["current_page"] = "image_details"
-        
+
         with col2:
             st.write("")
-        
+
         with col3:
             st.write("")
 
