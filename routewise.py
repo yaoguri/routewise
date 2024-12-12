@@ -17,10 +17,10 @@ from fpdf import FPDF
 from functools import lru_cache
 import io
 
-try:
-    import sacremoses
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "sacremoses"])
+#try:
+    #import sacremoses
+#except ImportError:
+    #subprocess.check_call([sys.executable, "-m", "pip", "install", "sacremoses"])
 
 st.set_page_config(page_title='Itinerary Planner in Mendez, Cavite', layout="wide")
 
